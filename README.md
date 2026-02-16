@@ -20,9 +20,15 @@ Installation
 scTE works with python >=3.6.
 
 ```bash
-$ git clone https://github.com/JiekaiLab/scTE.git
-$ cd scTE
+$ git clone <your-testground-repo-url>
+$ cd scTE_Testground
 $ python setup.py install
+
+# Commands installed by this testground fork (to avoid colliding with upstream scTE):
+$ scTE_testground
+$ scTE_build_testground
+$ scTEATAC_testground
+$ scTEATAC_build_testground
 ```
 
 Usage

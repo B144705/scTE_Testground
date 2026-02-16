@@ -3,7 +3,7 @@ import multiprocessing
 import argparse
 from functools import partial
 import logging
-import os, sys, glob, datetime, time, gzip
+import os, sys, glob, datetime, time, gzip, shutil
 import collections
 from collections import defaultdict
 from math import log
@@ -14,6 +14,20 @@ import subprocess
 import numpy as np
 import scipy
 import anndata as ad
+
+_GLANNOT_CACHE = {}
+
+
+def merge_gzip_files(input_glob, output_file):
+    """Concatenate multiple gzip files into a single gzip file."""
+    infiles = sorted(glob.glob(input_glob))
+    if not infiles:
+        raise FileNotFoundError("No files matched pattern: %s" % input_glob)
+
+    with gzip.open(output_file, "wt") as out_oh:
+        for infile in infiles:
+            with gzip.open(infile, "rt") as in_oh:
+                shutil.copyfileobj(in_oh, out_oh)
 
 def read_opts(parser):
     args = parser.parse_args()
@@ -174,7 +188,7 @@ def Bam2bed(filename, CB, UMI, out, num_threads):
         elif CB == 'CB':
             os.system('samtools view -@ %s %s | awk \'{OFS="\t"}{for(i=12;i<=NF;i++)if($i~/CB:Z:/)n=i}{for(i=12;i<=NF;i++)if($i~/UB:Z:/)m=i}{print $3,$4,$4+100,$n,$m}\' | sed %s \'s/CB:Z://g\' | sed %s \'s/UB:Z://g\'| sed %s \'s/^chr//g\' | awk \'!x[$4$5]++\' | gzip -c > %s_scTEtmp/o1/%s.bed.gz' % (num_threads, filename, switch, switch, switch, out,out))
 
-def Para_bam2bed(filename, CB, UMI, out):
+def Para_bam2bed(filename, CB, UMI, out, num_threads=1):
     if not os.path.exists('%s_scTEtmp/o0'%out):
         os.system('mkdir -p %s_scTEtmp/o0'%out)
 
@@ -187,21 +201,21 @@ def Para_bam2bed(filename, CB, UMI, out):
     
     if UMI == 'False':
         if CB == 'False':
-            os.system('samtools view %s | awk \'{OFS="\t"}{print $3,$4,$4+100,"%s"}\' | sed %s \'s/^chr//g\' | gzip > %s_scTEtmp/o0/%s.bed.gz'%(filename, sample, switch, out, sample))
+            os.system('samtools view -@ %s %s | awk \'{OFS="\t"}{print $3,$4,$4+100,"%s"}\' | sed %s \'s/^chr//g\' | gzip > %s_scTEtmp/o0/%s.bed.gz'%(num_threads, filename, sample, switch, out, sample))
         elif CB == 'CR':
-            os.system('samtools view %s | awk \'{OFS="\t"}{for(i=12;i<=NF;i++)if($i~/CR:Z:/)n=i}{print $3,$4,$4+100,$n,$m}\' | sed %s \'s/CR:Z://g\' | sed %s \'s/^chr//g\' | gzip > %s_scTEtmp/o0/%s.bed.gz'%(filename, switch, switch, out,sample))
+            os.system('samtools view -@ %s %s | awk \'{OFS="\t"}{for(i=12;i<=NF;i++)if($i~/CR:Z:/)n=i}{print $3,$4,$4+100,$n,$m}\' | sed %s \'s/CR:Z://g\' | sed %s \'s/^chr//g\' | gzip > %s_scTEtmp/o0/%s.bed.gz'%(num_threads, filename, switch, switch, out,sample))
         elif CB == 'CB':
-            os.system('samtools view %s | awk \'{OFS="\t"}{for(i=12;i<=NF;i++)if($i~/CB:Z:/)n=i}{print $3,$4,$4+100,$n,$m}\' | sed %s \'s/CB:Z://g\' | sed %s \'s/^chr//g\' | gzip > %s_scTEtmp/o0/%s.bed.gz'%(filename, switch, switch, out,sample))
+            os.system('samtools view -@ %s %s | awk \'{OFS="\t"}{for(i=12;i<=NF;i++)if($i~/CB:Z:/)n=i}{print $3,$4,$4+100,$n,$m}\' | sed %s \'s/CB:Z://g\' | sed %s \'s/^chr//g\' | gzip > %s_scTEtmp/o0/%s.bed.gz'%(num_threads, filename, switch, switch, out,sample))
     elif UMI == 'UR':
         if CB == 'CR':
-            os.system('samtools view %s | awk \'{OFS="\t"}{for(i=12;i<=NF;i++)if($i~/CR:Z:/)n=i}{for(i=12;i<=NF;i++)if($i~/UR:Z:/)m=i}{print $3,$4,$4+100,$n,$m}\' | sed %s \'s/CR:Z://g\' | sed %s \'s/UR:Z://g\' | sed %s \'s/^chr//g\' | awk \'!x[$4$5]++\' | gzip > %s_scTEtmp/o0/%s.bed.gz'%(filename, switch, switch, switch, out,sample))
+            os.system('samtools view -@ %s %s | awk \'{OFS="\t"}{for(i=12;i<=NF;i++)if($i~/CR:Z:/)n=i}{for(i=12;i<=NF;i++)if($i~/UR:Z:/)m=i}{print $3,$4,$4+100,$n,$m}\' | sed %s \'s/CR:Z://g\' | sed %s \'s/UR:Z://g\' | sed %s \'s/^chr//g\' | awk \'!x[$4$5]++\' | gzip > %s_scTEtmp/o0/%s.bed.gz'%(num_threads, filename, switch, switch, switch, out,sample))
         elif CB == 'CB':
-            os.system('samtools view %s | awk \'{OFS="\t"}{for(i=12;i<=NF;i++)if($i~/CB:Z:/)n=i}{for(i=12;i<=NF;i++)if($i~/UR:Z:/)m=i}{print $3,$4,$4+100,$n,$m}\' | sed %s \'s/CB:Z://g\' | sed %s \'s/UR:Z://g\' | sed %s \'s/^chr//g\' | awk \'!x[$4$5]++\' | gzip > %s_scTEtmp/o0/%s.bed.gz'%(filename, switch, switch, switch, out,sample))
+            os.system('samtools view -@ %s %s | awk \'{OFS="\t"}{for(i=12;i<=NF;i++)if($i~/CB:Z:/)n=i}{for(i=12;i<=NF;i++)if($i~/UR:Z:/)m=i}{print $3,$4,$4+100,$n,$m}\' | sed %s \'s/CB:Z://g\' | sed %s \'s/UR:Z://g\' | sed %s \'s/^chr//g\' | awk \'!x[$4$5]++\' | gzip > %s_scTEtmp/o0/%s.bed.gz'%(num_threads, filename, switch, switch, switch, out,sample))
     elif UMI == 'UB':
         if CB == 'CR':
-            os.system('samtools view %s | awk \'{OFS="\t"}{for(i=12;i<=NF;i++)if($i~/CR:Z:/)n=i}{for(i=12;i<=NF;i++)if($i~/UB:Z:/)m=i}{print $3,$4,$4+100,$n,$m}\' | sed %s \'s/CR:Z://g\' | sed %s \'s/UB:Z://g\' | sed %s \'s/^chr//g\' | awk \'!x[$4$5]++\' | gzip > %s_scTEtmp/o0/%s.bed.gz'%(filename, switch, switch, switch, out,sample))
+            os.system('samtools view -@ %s %s | awk \'{OFS="\t"}{for(i=12;i<=NF;i++)if($i~/CR:Z:/)n=i}{for(i=12;i<=NF;i++)if($i~/UB:Z:/)m=i}{print $3,$4,$4+100,$n,$m}\' | sed %s \'s/CR:Z://g\' | sed %s \'s/UB:Z://g\' | sed %s \'s/^chr//g\' | awk \'!x[$4$5]++\' | gzip > %s_scTEtmp/o0/%s.bed.gz'%(num_threads, filename, switch, switch, switch, out,sample))
         elif CB == 'CB':
-            os.system('samtools view %s | awk \'{OFS="\t"}{for(i=12;i<=NF;i++)if($i~/CB:Z:/)n=i}{for(i=12;i<=NF;i++)if($i~/UB:Z:/)m=i}{print $3,$4,$4+100,$n,$m}\' | sed %s \'s/CB:Z://g\' | sed %s \'s/UB:Z://g\' | sed %s \'s/^chr//g\' | awk \'!x[$4$5]++\' | gzip > %s_scTEtmp/o0/%s.bed.gz'%(filename, switch, switch, switch, out,sample))
+            os.system('samtools view -@ %s %s | awk \'{OFS="\t"}{for(i=12;i<=NF;i++)if($i~/CB:Z:/)n=i}{for(i=12;i<=NF;i++)if($i~/UB:Z:/)m=i}{print $3,$4,$4+100,$n,$m}\' | sed %s \'s/CB:Z://g\' | sed %s \'s/UB:Z://g\' | sed %s \'s/^chr//g\' | awk \'!x[$4$5]++\' | gzip > %s_scTEtmp/o0/%s.bed.gz'%(num_threads, filename, switch, switch, switch, out,sample))
 
 def splitAllChrs(chromosome_list, filename, genenumber, countnumber, UMI=True):
     '''
@@ -374,18 +388,26 @@ def align(chr, filename, all_annot, glannot, whitelist): #CB
         os.system('mkdir -p %s_scTEtmp/o3'%filename)
 
     if not glannot: # Load separately for the multicore pipeline, share the index for the single core pipeline
-        glannot = glload(all_annot)
+        cache_key = os.path.realpath(all_annot)
+        if cache_key not in _GLANNOT_CACHE:
+            _GLANNOT_CACHE[cache_key] = glload(all_annot)
+        glannot = _GLANNOT_CACHE[cache_key]
 
     # Only keep the glbase parts we need.
     buckets = glannot.buckets[chr.replace('chr', '')]
     all_annot = glannot.linearData
+
+    if isinstance(whitelist, set):
+        whitelist_set = whitelist
+    else:
+        whitelist_set = set(whitelist)
 
     oh = gzip.open('%s_scTEtmp/o2/%s.%s.bed.gz' % (filename, filename, chr), 'rt')
     res = {}
     for line in oh:
         t = line.strip().split('\t')
         barcode = t[3]
-        if barcode not in whitelist:
+        if barcode not in whitelist_set:
             continue
         if barcode not in res:
             res[barcode] = defaultdict(int)

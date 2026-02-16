@@ -48,6 +48,9 @@ def prepare_parser():
     optional.add_argument('-p','--thread', metavar='INT', dest='thread', type=int, default=1,
                         help='Number of threads to use, Default: 1')
 
+    optional.add_argument('--resume', dest='resume', type=str, nargs='?', default='False', choices=['True','False'],
+                        help='Resume a previous interrupted run by reusing temporary outputs when possible. Default: False')
+
     optional.add_argument('-v','--version', action='version', version='%(prog)s 1.0')
 
     required = parser.add_argument_group('required arguments')
@@ -82,6 +85,8 @@ def main():
 #     else: args.CB = False
     if args.hdf5 == 'True': args.hdf5 = True
     else: args.hdf5 = False
+    if args.resume == 'True': args.resume = True
+    else: args.resume = False
 
     info = args.info
     error = args.error
@@ -105,50 +110,65 @@ def main():
     if not os.path.exists('%s_scTEtmp/o1'%outname):
         os.system('mkdir -p %s_scTEtmp/o1'%outname)
 
-    for k in args.input:
-        checkCBUMI(filename=k,out=outname,CB=args.CB,UMI=args.UMI)
-    info("Input SAM/BAM file appears to be valid")
+    bed_file = '%s_scTEtmp/o1/%s.bed.gz' % (outname, outname)
+    whitelist_file = '%s_scTEtmp/whitelist.txt' % outname
 
-    if len(args.input) > 1:
-        info('Using parabam2bed as more than 1 input BAM')
-        pool=multiprocessing.Pool(processes=args.thread)
-        partial_work = partial(Para_bam2bed, CB=args.CB, UMI=args.UMI,out=outname)
-        pool.map(partial_work, args.input)
-        os.system('gunzip -c -f %s_scTEtmp/o0/*.bed.gz | gzip > %s_scTEtmp/o1/%s.bed.gz' % (outname,outname,outname))
-    
+    if args.resume and os.path.exists(bed_file):
+        info('Resume mode: found %s, skipping BAM/SAM to BED conversion' % bed_file)
     else:
-        print(args.CB,args.UMI,'good\n')
-        Bam2bed(args.input[0], args.CB, args.UMI, outname, args.thread)
+        for k in args.input:
+            checkCBUMI(filename=k,out=outname,CB=args.CB,UMI=args.UMI)
+        info("Input SAM/BAM file appears to be valid")
+
+        if len(args.input) > 1:
+            info('Using parabam2bed as more than 1 input BAM')
+            with multiprocessing.Pool(processes=args.thread) as pool:
+                partial_work = partial(Para_bam2bed, CB=args.CB, UMI=args.UMI,out=outname, num_threads=args.thread)
+                chunksize = max(1, len(args.input) // (args.thread * 2))
+                pool.map(partial_work, args.input, chunksize=chunksize)
+            merge_gzip_files('%s_scTEtmp/o0/*.bed.gz' % outname, '%s_scTEtmp/o1/%s.bed.gz' % (outname, outname))
+
+        else:
+            print(args.CB,args.UMI,'good\n')
+            Bam2bed(args.input[0], args.CB, args.UMI, outname, args.thread)
     info("Done BAM/SAM files processing ...%s \n"%(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
 
     info("Splitting ...%s"%(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    if args.thread == 1: #Single thread path, mainly
-        # This is useful for testing optimsations, as the multiprocessing path the profile
-        # Just gets locked up in {method 'acquire' of '_thread.lock' objects}
-        info('Executing single thread path')
-        whitelist = splitAllChrs(chr_list, filename=outname, genenumber=args.genenumber, countnumber=args.countnumber, UMI=args.UMI)
+    if args.resume and os.path.exists(whitelist_file):
+        with open(whitelist_file, 'r') as oh:
+            whitelist = [line.strip() for line in oh if line.strip()]
+        info('Resume mode: loaded %s barcodes from %s' % (len(whitelist), whitelist_file))
     else:
-        info('Executing multiple thread path with %s threads' % args.thread)
-        pool=multiprocessing.Pool(processes=args.thread)
-        partial_work = partial(splitChr, filename=outname, CB=args.CB, UMI=args.UMI)
-        pool.map(partial_work, chr_list)
-        whitelist = filterCRs(filename=outname, genenumber=args.genenumber, countnumber=args.countnumber)
+        # single-pass splitter is usually faster than repeated per-chromosome grep in multiprocessing mode
+        info('Executing single-pass splitter')
+        whitelist = splitAllChrs(chr_list, filename=outname, genenumber=args.genenumber, countnumber=args.countnumber, UMI=args.UMI)
+        with open(whitelist_file, 'w') as oh:
+            oh.write('\n'.join(whitelist))
+            if whitelist:
+                oh.write('\n')
+
+    whitelist = set(whitelist)
 
     info("Finished processing sample files %s \n"%(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
 
     info("Fetching from the annotation index... %s"%(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    if args.thread == 1: #Single thread path
+
+    aligned_chr_files = ['%s_scTEtmp/o3/%s.chr%s.bed.gz' % (outname, outname, c.replace('chr', '')) for c in chr_list]
+    if args.resume and aligned_chr_files and all(os.path.exists(p) for p in aligned_chr_files):
+        info('Resume mode: found existing per-chromosome alignments, skipping re-alignment')
+    elif args.thread == 1: #Single thread path
         for chrom in chr_list:
             align(chr=chrom, filename=outname, all_annot=None, glannot=glannot, whitelist=whitelist) #CB=args.CB
 
     else: # Multiprocessing path:
-        pool = multiprocessing.Pool(processes=args.thread)
-        partial_work = partial(align, filename=outname, all_annot=all_annot, glannot=None, whitelist=whitelist) # send a copy of the index,  CB=args.CB
-        pool.map(partial_work, chr_list)
+        with multiprocessing.Pool(processes=args.thread) as pool:
+            partial_work = partial(align, filename=outname, all_annot=all_annot, glannot=None, whitelist=whitelist) # send a copy of the index,  CB=args.CB
+            chunksize = max(1, len(chr_list) // (args.thread * 2))
+            pool.map(partial_work, chr_list, chunksize=chunksize)
 
     if not os.path.exists('%s_scTEtmp/o4'%outname):
         os.system('mkdir -p %s_scTEtmp/o4'%outname)
-    os.system('gunzip -c -f %s_scTEtmp/o3/%s.*.bed.gz | gzip > %s_scTEtmp/o4/%s.bed.gz' % (outname,outname,outname,outname))
+    merge_gzip_files('%s_scTEtmp/o3/%s.*.bed.gz' % (outname, outname), '%s_scTEtmp/o4/%s.bed.gz' % (outname, outname))
     info("Done fetching... %s \n"%(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
 
     info("Calculating expression... %s"%(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))

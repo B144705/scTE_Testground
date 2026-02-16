@@ -18,6 +18,27 @@ import sys, os, pickle
 
 from . import config
 
+
+class BadBinaryFileFormatError(Exception):
+    """Raised when an index file exists but cannot be unpickled as a valid glbase object."""
+
+    def __init__(self, filename, detail=None):
+        size_hint = ""
+        try:
+            file_size = os.path.getsize(os.path.realpath(filename))
+            size_hint = f" File size: {file_size} bytes."
+        except OSError:
+            pass
+
+        message = (
+            f"Unable to load binary index file '{filename}'. "
+            "The file appears to be empty, truncated, or not a valid scTE index."
+            f"{size_hint}"
+        )
+        if detail:
+            message += f" Original error: {detail}"
+        super().__init__(message)
+
 def glload(filename):
     """
     **Purpose**
@@ -37,8 +58,8 @@ def glload(filename):
         oh = open(os.path.realpath(filename), "rb")
         newl = pickle.load(oh)
         oh.close()
-    except pickle.UnpicklingError:
-        raise BadBinaryFileFormatError(filename)
+    except (pickle.UnpicklingError, EOFError, AttributeError, ValueError) as err:
+        raise BadBinaryFileFormatError(filename, detail=err) from err
 
     # Recalculate the _optimiseData for old lists, and new features
     try:
